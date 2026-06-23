@@ -29,6 +29,7 @@ class EventType(StrEnum):
     SERVER_SHUTDOWN = "server.shutdown"
 
     # Model lifecycle
+    MODEL_DOWNLOADING = "model.downloading"
     MODEL_LOADING = "model.loading"
     MODEL_READY = "model.ready"
     MODEL_FAILED = "model.failed"

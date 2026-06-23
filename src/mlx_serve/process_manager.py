@@ -38,6 +38,7 @@ _LOG_DIR = pathlib.Path(tempfile.gettempdir()) / "mlx-manager-logs"
 class ModelState(Enum):
     IDLE = "idle"
     LOADING = "loading"
+    DOWNLOADING = "downloading"
     READY = "ready"
     FAILED = "failed"
 
@@ -54,10 +55,60 @@ _stderr_log_handle = None
 _inactivity_timeout: int = config.INACTIVITY_TIMEOUT  # overridable per-request
 _loading_started_at: float | None = None  # monotonic time when loading began
 
+# Failure tracking (circuit breaker / cooldown)
+_last_failure_at: float | None = None  # monotonic timestamp of last failure
+_last_failed_model: str | None = None
+_last_failure_reason: str | None = None
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _record_failure(model_name: str, reason: str) -> None:
+    """Record a model load failure for cooldown tracking."""
+    global _last_failure_at, _last_failed_model, _last_failure_reason
+    _last_failure_at = time.monotonic()
+    _last_failed_model = model_name
+    _last_failure_reason = reason
+
+
+def _clear_failure() -> None:
+    """Reset failure tracking state."""
+    global _last_failure_at, _last_failed_model, _last_failure_reason
+    _last_failure_at = None
+    _last_failed_model = None
+    _last_failure_reason = None
+
+
+def _failure_cooldown_remaining(model_name: str) -> float:
+    """Return seconds remaining in the failure cooldown for this model, or 0.0."""
+    if _last_failure_at is None or _last_failed_model != model_name:
+        return 0.0
+    elapsed = time.monotonic() - _last_failure_at
+    if elapsed >= config.FAILURE_COOLDOWN:
+        return 0.0
+    return config.FAILURE_COOLDOWN - elapsed
+
+
+def _is_model_cached(model_cfg: config.ModelConfig) -> bool:
+    """Return True if the model's weights are already in the HuggingFace cache."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        from huggingface_hub.file_download import _CACHED_NO_EXIST
+
+        result = try_to_load_from_cache(model_cfg.hf_path, "config.json")
+        return isinstance(result, str) and result is not _CACHED_NO_EXIST
+    except Exception:
+        return False
+
+
+def _readiness_timeout(model_cfg: config.ModelConfig) -> int:
+    """Return the appropriate readiness timeout for this model."""
+    if not _is_model_cached(model_cfg):
+        return config.DOWNLOAD_TIMEOUT
+    return config.STARTUP_TIMEOUT
 
 
 def _build_command(model_cfg: config.ModelConfig) -> list[str]:
@@ -84,8 +135,12 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
     return cmd
 
 
-def _diagnose_failure() -> dict:
-    """Inspect subprocess state and stderr to determine failure reason."""
+def _diagnose_failure(timeout_seconds: int | None = None) -> dict:
+    """Inspect subprocess state and stderr to determine failure reason.
+
+    ``timeout_seconds`` is the readiness deadline that was actually applied
+    (download vs. startup), reported back when the failure is a timeout.
+    """
     detail: dict = {}
 
     if _process is not None and _process.poll() is not None:
@@ -93,7 +148,9 @@ def _diagnose_failure() -> dict:
         detail["reason"] = "process_crash"
     else:
         detail["reason"] = "startup_timeout"
-        detail["timeout_seconds"] = config.STARTUP_TIMEOUT
+        detail["timeout_seconds"] = (
+            timeout_seconds if timeout_seconds is not None else config.STARTUP_TIMEOUT
+        )
 
     if _stderr_log_path and _stderr_log_path.exists():
         lines = _stderr_log_path.read_text().splitlines()
@@ -153,17 +210,20 @@ async def _terminate_current() -> None:
 async def _health_check_loop() -> None:
     """Poll /health every 2s until READY or startup timeout."""
     global _state
-    deadline = datetime.now(UTC) + timedelta(seconds=config.STARTUP_TIMEOUT)
+    model_cfg = config.MODELS.get(_active_model) if _active_model else None
+    readiness_timeout = _readiness_timeout(model_cfg) if model_cfg else config.STARTUP_TIMEOUT
+    deadline = datetime.now(UTC) + timedelta(seconds=readiness_timeout)
     async with httpx.AsyncClient() as client:
         while datetime.now(UTC) < deadline:
             # Detect early process exit
             if _process is not None and _process.poll() is not None:
                 _state = ModelState.FAILED
                 _ready_event.set()
-                detail = _diagnose_failure()
+                detail = _diagnose_failure(timeout_seconds=readiness_timeout)
                 load_ms = (
                     (time.monotonic() - _loading_started_at) * 1000 if _loading_started_at else None
                 )
+                _record_failure(_active_model, detail.get("reason", "unknown"))
                 events.emit(
                     events.EventType.MODEL_FAILED,
                     model=_active_model,
@@ -189,6 +249,7 @@ async def _health_check_loop() -> None:
                 if resp.status_code == 200:
                     _state = ModelState.READY
                     _ready_event.set()
+                    _clear_failure()
                     load_ms = (
                         (time.monotonic() - _loading_started_at) * 1000
                         if _loading_started_at
@@ -229,8 +290,9 @@ async def _health_check_loop() -> None:
     # Timed out
     _state = ModelState.FAILED
     _ready_event.set()
-    detail = _diagnose_failure()
+    detail = _diagnose_failure(timeout_seconds=readiness_timeout)
     load_ms = (time.monotonic() - _loading_started_at) * 1000 if _loading_started_at else None
+    _record_failure(_active_model, detail.get("reason", "unknown"))
     events.emit(
         events.EventType.MODEL_FAILED,
         model=_active_model,
@@ -238,7 +300,7 @@ async def _health_check_loop() -> None:
         duration_ms=load_ms,
     )
     logger.error(
-        f"Model {_active_model} timed out after {config.STARTUP_TIMEOUT}s (logs: {_stderr_log_path})"
+        f"Model {_active_model} timed out after {readiness_timeout}s (logs: {_stderr_log_path})"
     )
 
 
@@ -264,10 +326,18 @@ async def _switch_model(model_name: str) -> None:
         await _terminate_current()
 
         model_cfg = config.MODELS[model_name]
+        cached = _is_model_cached(model_cfg)
         _ready_event.clear()
-        _state = ModelState.LOADING
+        _state = ModelState.DOWNLOADING if not cached else ModelState.LOADING
         _active_model = model_name
         _loading_started_at = time.monotonic()
+
+        if not cached:
+            events.emit(
+                events.EventType.MODEL_DOWNLOADING,
+                model=model_name,
+                detail={"hf_path": model_cfg.hf_path},
+            )
 
         _LOG_DIR.mkdir(exist_ok=True)
         _stderr_log_path = _LOG_DIR / f"{model_name}.log"
@@ -315,14 +385,27 @@ async def ensure_model(model_name: str) -> bool:
         _last_request_at = datetime.now(UTC)
         return False  # already warm
 
+    cooldown = _failure_cooldown_remaining(model_name)
+    if cooldown > 0:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Model {model_name} recently failed ({_last_failure_reason}); "
+                f"retry in {cooldown:.0f}s"
+            ),
+        )
+
     cold_start = True
 
     if _active_model != model_name or _state in (ModelState.IDLE, ModelState.FAILED):
         await _switch_model(model_name)
 
-    if _state == ModelState.LOADING:
+    if _state in (ModelState.LOADING, ModelState.DOWNLOADING):
+        model_cfg = config.MODELS[model_name]
         with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(_ready_event.wait(), timeout=config.STARTUP_TIMEOUT + 5)
+            await asyncio.wait_for(_ready_event.wait(), timeout=_readiness_timeout(model_cfg) + 5)
 
     if _state == ModelState.FAILED:
         from fastapi import HTTPException
