@@ -113,6 +113,14 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
         data.get("manager_port", 8095),
         data.get("inactivity_timeout_seconds", 600),
         data.get("startup_timeout_seconds", 120),
+        # Max wait for a first-time model download (HF pull) to finish. Far
+        # larger than startup_timeout because multi-GB weights can't arrive in
+        # 120s. Only applied when the model is not yet in the HF cache.
+        data.get("download_timeout_seconds", 1800),
+        # After a model fails to load, reject further requests for it for this
+        # many seconds instead of respawning on every retry (prevents the
+        # infinite reload loop when a client auto-retries).
+        data.get("failure_cooldown_seconds", 30),
         monitoring,
     )
 
@@ -123,6 +131,8 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
     MANAGER_PORT,
     INACTIVITY_TIMEOUT,
     STARTUP_TIMEOUT,
+    DOWNLOAD_TIMEOUT,
+    FAILURE_COOLDOWN,
     MONITORING,
 ) = _load()
 
