@@ -9,6 +9,7 @@ import contextlib
 import json
 import logging
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,7 @@ _MLX_LM_SERVER = _VENV_BIN / "mlx_lm.server"
 _MLX_VLM_SERVER = _VENV_BIN / "mlx_vlm.server"
 
 _LOG_DIR = pathlib.Path(tempfile.gettempdir()) / "mlx-manager-logs"
+_LOG_SAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 # ---------------------------------------------------------------------------
 # State
@@ -148,6 +150,10 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
     if model_cfg.extra_args:
         cmd += [str(arg) for arg in model_cfg.extra_args]
     return cmd
+
+
+def _log_filename(model_name: str) -> str:
+    return f"{_LOG_SAFE_CHARS.sub('_', model_name).strip('_') or 'model'}.log"
 
 
 def _diagnose_failure(timeout_seconds: int | None = None) -> dict:
@@ -355,7 +361,7 @@ async def _switch_model(model_name: str) -> None:
             )
 
         _LOG_DIR.mkdir(exist_ok=True)
-        _stderr_log_path = _LOG_DIR / f"{model_name}.log"
+        _stderr_log_path = _LOG_DIR / _log_filename(model_name)
         _stderr_log_handle = _stderr_log_path.open("w")
 
         cmd = _build_command(model_cfg)

@@ -143,6 +143,13 @@ def test_build_command_includes_per_model_subprocess_options(pm, monkeypatch, tm
     assert cmd[-2:] == ["--log-level", "DEBUG"]
 
 
+def test_log_filename_sanitizes_hugging_face_model_ids(pm):
+    assert (
+        pm._log_filename("mlx-community/Qwen3.6-35B-A3B-nvfp4")
+        == "mlx-community_Qwen3.6-35B-A3B-nvfp4.log"
+    )
+
+
 @pytest.mark.asyncio
 async def test_switch_emits_downloading_event_when_not_cached(pm, monkeypatch):
     """When a model isn't cached, the switch enters DOWNLOADING and emits a
