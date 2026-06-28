@@ -109,6 +109,40 @@ def test_diagnose_failure_reports_actual_timeout(pm):
     assert detail["timeout_seconds"] == pm.config.DOWNLOAD_TIMEOUT
 
 
+def test_build_command_includes_per_model_subprocess_options(pm, monkeypatch, tmp_path):
+    executable = tmp_path / "mlx_lm.server"
+    executable.write_text("")
+    monkeypatch.setattr(pm, "_MLX_LM_SERVER", executable)
+
+    cfg = pm.config.ModelConfig(
+        name="ornith",
+        type="text",
+        hf_path="mlx-community/Ornith-1.0-35B-bf16",
+        context_length=8192,
+        chat_template_args={"enable_thinking": False},
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        min_p=0.05,
+        prompt_cache_size=2,
+        extra_args=["--log-level", "DEBUG"],
+    )
+
+    cmd = pm._build_command(cfg)
+
+    assert cmd[:2] == [str(executable), "--model"]
+    assert [
+        cmd[cmd.index("--chat-template-args")],
+        cmd[cmd.index("--chat-template-args") + 1],
+    ] == ["--chat-template-args", '{"enable_thinking": false}']
+    assert cmd[cmd.index("--temp") + 1] == "0.6"
+    assert cmd[cmd.index("--top-p") + 1] == "0.95"
+    assert cmd[cmd.index("--top-k") + 1] == "20"
+    assert cmd[cmd.index("--min-p") + 1] == "0.05"
+    assert cmd[cmd.index("--prompt-cache-size") + 1] == "2"
+    assert cmd[-2:] == ["--log-level", "DEBUG"]
+
+
 @pytest.mark.asyncio
 async def test_switch_emits_downloading_event_when_not_cached(pm, monkeypatch):
     """When a model isn't cached, the switch enters DOWNLOADING and emits a
@@ -116,6 +150,7 @@ async def test_switch_emits_downloading_event_when_not_cached(pm, monkeypatch):
     import mlx_serve.events as events
 
     monkeypatch.setattr(pm, "_is_model_cached", lambda cfg: False)
+    monkeypatch.setattr(pm, "_MLX_LM_SERVER", pm.pathlib.Path(__file__))
 
     class FakeProc:
         pid = 4321

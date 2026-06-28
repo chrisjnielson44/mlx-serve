@@ -11,6 +11,7 @@ Config discovery order:
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -60,6 +61,13 @@ class ModelConfig:
     max_kv_cache_size: int = (
         0  # KV cache token capacity for prompt caching (--max-kv-cache-size); 0 = model default
     )
+    chat_template_args: dict[str, Any] | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    prompt_cache_size: int | None = None
+    extra_args: list[str] | None = None
 
 
 @dataclass
@@ -92,6 +100,13 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             hf_path=entry["hf_path"],
             context_length=entry.get("context_length", 0),
             max_kv_cache_size=entry.get("max_kv_cache_size", 0),
+            chat_template_args=entry.get("chat_template_args"),
+            temperature=entry.get("temperature"),
+            top_p=entry.get("top_p"),
+            top_k=entry.get("top_k"),
+            min_p=entry.get("min_p"),
+            prompt_cache_size=entry.get("prompt_cache_size"),
+            extra_args=entry.get("extra_args"),
         )
 
     # Monitoring settings (optional section in models.yaml)

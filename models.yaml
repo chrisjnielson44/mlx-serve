@@ -14,6 +14,12 @@
 # max_kv_cache_size: KV cache token capacity for prompt caching (--max-kv-cache-size);
 #                    limits how many tokens of KV state are retained between requests;
 #                    0 = no limit (model default). Set to e.g. 8192 to cap memory usage.
+# chat_template_args: JSON-serializable dict passed to --chat-template-args.
+#                    Useful for models that need template flags, e.g.
+#                    {enable_thinking: false}.
+# temperature/top_p/top_k/min_p: Optional subprocess sampling defaults.
+# prompt_cache_size: Optional prompt cache count (--prompt-cache-size).
+# extra_args:        Optional raw CLI args appended to mlx_lm.server/mlx_vlm.server.
 
 mlx_port: 8091                    # Internal port used by the active mlx subprocess
 manager_port: 8095                # Port the FastAPI manager listens on
@@ -30,6 +36,8 @@ models:
     type: text
     hf_path: mlx-community/Qwen2.5-7B-Instruct-4bit
     context_length: 32768
+    temperature: 0.6
+    top_p: 0.9
 
   - name: mlx-qwen2.5-3b
     type: text
@@ -40,6 +48,17 @@ models:
     type: text
     hf_path: mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit
     context_length: 32768
+
+  # Thinking-template models can be configured per model.
+  - name: mlx-ornith
+    type: text
+    hf_path: mlx-community/Ornith-1.0-35B-bf16
+    context_length: 8192
+    chat_template_args:
+      enable_thinking: false
+    temperature: 0.6
+    top_p: 0.95
+    prompt_cache_size: 2
 
   - name: mlx-qwen3.5-4b
     type: text

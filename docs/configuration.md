@@ -17,6 +17,10 @@ models:
   - name: <model-name>
     type: <text|vision|embedding|tts>
     hf_path: <huggingface-repo-id>
+    context_length: 32768
+    chat_template_args: {}
+    temperature: 0.6
+    top_p: 0.9
 ```
 
 ---
@@ -163,6 +167,81 @@ Defaults to `0` (no limit — the model retains as much KV state as fits in unif
 ```
 
 Only applies to `text` and `vision` model types. Setting a value limits the memory footprint of the KV cache — useful when running large models close to the unified memory limit.
+
+### `chat_template_args` (optional)
+
+JSON-serializable dictionary passed to the subprocess as `--chat-template-args`.
+This is useful for models whose tokenizer chat template supports feature flags.
+
+```yaml
+- name: mlx-ornith
+  type: text
+  hf_path: mlx-community/Ornith-1.0-35B-bf16
+  context_length: 8192
+  chat_template_args:
+    enable_thinking: false
+```
+
+This becomes:
+
+```bash
+mlx_lm.server ... --chat-template-args '{"enable_thinking": false}'
+```
+
+Only applies to `text` and `vision` model types.
+
+### Sampling defaults (optional)
+
+Per-model sampling defaults can be passed to `mlx_lm.server` / `mlx_vlm.server`:
+
+| Field | Subprocess flag |
+|-------|-----------------|
+| `temperature` | `--temp` |
+| `top_p` | `--top-p` |
+| `top_k` | `--top-k` |
+| `min_p` | `--min-p` |
+
+```yaml
+- name: mlx-qwen-coder
+  type: text
+  hf_path: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
+  context_length: 8192
+  temperature: 0.4
+  top_p: 0.9
+```
+
+Only applies to `text` and `vision` model types.
+
+### `prompt_cache_size` (optional)
+
+Prompt cache count, passed to the subprocess as `--prompt-cache-size`.
+
+```yaml
+- name: mlx-qwen-coder
+  type: text
+  hf_path: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
+  prompt_cache_size: 3
+```
+
+Only applies to `text` and `vision` model types.
+
+### `extra_args` (optional)
+
+Raw subprocess CLI arguments appended after the managed options. Use this for
+new `mlx_lm.server` / `mlx_vlm.server` flags before the manager has first-class
+fields for them.
+
+```yaml
+- name: mlx-qwen-coder
+  type: text
+  hf_path: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
+  extra_args:
+    - --log-level
+    - DEBUG
+```
+
+Only applies to `text` and `vision` model types. Prefer first-class fields when
+available so config stays portable across server versions.
 
 ### API key authentication (environment variable)
 

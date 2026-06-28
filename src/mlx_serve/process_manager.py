@@ -6,6 +6,7 @@ State machine: IDLE -> LOADING -> READY / FAILED -> IDLE (on inactivity/shutdown
 
 import asyncio
 import contextlib
+import json
 import logging
 import pathlib
 import subprocess
@@ -132,6 +133,20 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
         cmd += ["--max-tokens", str(model_cfg.context_length)]
     if model_cfg.max_kv_cache_size > 0:
         cmd += ["--max-kv-cache-size", str(model_cfg.max_kv_cache_size)]
+    if model_cfg.chat_template_args:
+        cmd += ["--chat-template-args", json.dumps(model_cfg.chat_template_args)]
+    if model_cfg.temperature is not None:
+        cmd += ["--temp", str(model_cfg.temperature)]
+    if model_cfg.top_p is not None:
+        cmd += ["--top-p", str(model_cfg.top_p)]
+    if model_cfg.top_k is not None:
+        cmd += ["--top-k", str(model_cfg.top_k)]
+    if model_cfg.min_p is not None:
+        cmd += ["--min-p", str(model_cfg.min_p)]
+    if model_cfg.prompt_cache_size is not None:
+        cmd += ["--prompt-cache-size", str(model_cfg.prompt_cache_size)]
+    if model_cfg.extra_args:
+        cmd += [str(arg) for arg in model_cfg.extra_args]
     return cmd
 
 

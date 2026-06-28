@@ -1,8 +1,5 @@
 """Tests for config discovery and parsing."""
 
-import os
-from pathlib import Path
-
 import pytest
 
 
@@ -93,6 +90,7 @@ models:
     monkeypatch.setenv("MLX_SERVE_CONFIG", str(config_file))
 
     import importlib
+
     import mlx_serve.config as cfg
 
     importlib.reload(cfg)
@@ -104,6 +102,43 @@ models:
     assert cfg.MODELS["my-model"].max_kv_cache_size == 8192
     assert cfg.MLX_PORT == 8091
     assert cfg.MANAGER_PORT == 8095
+
+
+def test_config_parses_subprocess_model_options(tmp_path, monkeypatch):
+    """Config parses optional per-model subprocess settings."""
+    config_file = tmp_path / "models.yaml"
+    config_file.write_text("""
+models:
+  - name: ornith
+    type: text
+    hf_path: mlx-community/Ornith-1.0-35B-bf16
+    chat_template_args:
+      enable_thinking: false
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.05
+    prompt_cache_size: 2
+    extra_args:
+      - --log-level
+      - DEBUG
+""")
+    monkeypatch.setenv("MLX_SERVE_CONFIG", str(config_file))
+
+    import importlib
+
+    import mlx_serve.config as cfg
+
+    importlib.reload(cfg)
+
+    model = cfg.MODELS["ornith"]
+    assert model.chat_template_args == {"enable_thinking": False}
+    assert model.temperature == 0.6
+    assert model.top_p == 0.95
+    assert model.top_k == 20
+    assert model.min_p == 0.05
+    assert model.prompt_cache_size == 2
+    assert model.extra_args == ["--log-level", "DEBUG"]
 
 
 def test_config_invalid_type(tmp_path, monkeypatch):
@@ -118,6 +153,7 @@ models:
     monkeypatch.setenv("MLX_SERVE_CONFIG", str(config_file))
 
     import importlib
+
     import mlx_serve.config as cfg
 
     with pytest.raises(ValueError, match="invalid type"):
@@ -131,6 +167,7 @@ def test_config_monitoring_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("MLX_SERVE_CONFIG", str(config_file))
 
     import importlib
+
     import mlx_serve.config as cfg
 
     importlib.reload(cfg)
