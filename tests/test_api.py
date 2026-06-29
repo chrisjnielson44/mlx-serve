@@ -24,11 +24,15 @@ models:
   - name: test-embed
     type: embedding
     hf_path: mlx-community/test-embed
+  - name: test-image
+    type: image
+    hf_path: mlx-community/test-image
 """)
     os.environ["MLX_SERVE_CONFIG"] = str(config_file)
 
     # Force reimport with new config
     import importlib
+
     import mlx_serve.config
 
     importlib.reload(mlx_serve.config)
@@ -66,6 +70,7 @@ def test_list_models(client):
     model_ids = [m["id"] for m in data["data"]]
     assert "test-text" in model_ids
     assert "test-embed" in model_ids
+    assert "test-image" in model_ids
 
 
 def test_get_model_not_found(client):
@@ -132,6 +137,19 @@ def test_chat_completions_wrong_type(client):
 
 def test_embeddings_model_not_found(client):
     resp = client.post("/v1/embeddings", json={"model": "nope", "input": "hello"})
+    assert resp.status_code == 404
+
+
+def test_images_model_not_found(client):
+    resp = client.post("/v1/images/generations", json={"model": "nope", "prompt": "hello"})
+    assert resp.status_code == 404
+
+
+def test_images_wrong_type(client):
+    resp = client.post(
+        "/v1/images/generations",
+        json={"model": "test-text", "prompt": "hello"},
+    )
     assert resp.status_code == 404
 
 

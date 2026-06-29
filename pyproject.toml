@@ -45,16 +45,21 @@ dependencies = [
 
 [project.optional-dependencies]
 text = ["mlx-lm>=0.14"]
-vision = ["mlx-vlm>=0.0.9"]
+vision = ["mlx-vlm>=0.0.9", "torchvision>=0.20"]
 tts = ["mlx-audio>=0.4.0"]
 stt = ["mlx-whisper>=0.4.0"]
 embeddings = ["mlx-embeddings>=0.1.0"]
+image = ["mflux>=0.17.0"]
+mcp = ["mcp>=1.0.0"]
 all = [
     "mlx-lm>=0.14",
     "mlx-vlm>=0.0.9",
     "mlx-audio>=0.4.0",
     "mlx-embeddings>=0.1.0",
+    "mflux>=0.17.0",
     "mlx-whisper>=0.4.0",
+    "torchvision>=0.20",
+    "mcp>=1.0.0",
 ]
 dev = [
     "pytest>=8.0",

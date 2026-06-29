@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from . import config, events, inline_manager, logging_config, metrics, process_manager
+from . import config, events, inline_manager, logging_config, metrics, model_pool, process_manager
 from .router import close_client, router
 from .router import dashboard as _bare_dashboard
 from .router import get_events as _bare_events
@@ -69,8 +69,12 @@ async def lifespan(app: FastAPI):
         f"({snap.ram_percent}% used)"
     )
 
+    # Initialize model pool
+    await model_pool.initialize()
+
     watcher_task = asyncio.create_task(process_manager.start_inactivity_watcher())
     inline_watcher_task = asyncio.create_task(inline_manager.start_inactivity_watcher())
+    pool_watcher_task = asyncio.create_task(model_pool.start_memory_watcher())
     memory_sampler_task = asyncio.create_task(
         metrics.start_memory_sampler(
             interval=config.MONITORING.memory_sample_interval,
@@ -87,9 +91,11 @@ async def lifespan(app: FastAPI):
 
         watcher_task.cancel()
         inline_watcher_task.cancel()
+        pool_watcher_task.cancel()
         memory_sampler_task.cancel()
         await process_manager.unload()
         await inline_manager.unload()
+        await model_pool.unload_all()
         await close_client()
 
 

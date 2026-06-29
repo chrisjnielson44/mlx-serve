@@ -7,6 +7,7 @@
 #   "text"           -> spawns mlx_lm.server subprocess
 #   "vision"         -> spawns mlx_vlm.server subprocess
 #   "embedding"      -> in-process via mlx-embeddings
+#   "image"          -> subprocess via mflux CLI
 #   "tts"            -> in-process via mlx-audio
 #   "stt"            -> in-process via mlx-whisper
 # context_length:    max output tokens per response (0 = server default)
@@ -27,8 +28,19 @@ models: []
   #
   # - name: mlx-qwen3-embedding
   #   type: embedding
-  #   hf_path: Qwen/Qwen3-Embedding-0.6B
+  #   hf_path: mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ
   #   context_length: 8192
+  #
+  # - name: mlx-qwen3vl-8b
+  #   type: vision
+  #   hf_path: mlx-community/Qwen3-VL-8B-Instruct-4bit
+  #   context_length: 32768
+  #
+  # - name: mlx-flux2-klein-4b
+  #   type: image
+  #   hf_path: mlx-community/flux2-klein-4b-4bit
+  #   base_model: flux2-klein-4b
+  #   steps: 4
   #
   # - name: mlx-whisper-turbo
   #   type: stt

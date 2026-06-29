@@ -2,6 +2,8 @@
 router.py — OpenAI-compatible HTTP endpoints for the MLX model manager.
 """
 
+import base64
+import contextlib
 import json
 import logging
 import pathlib
@@ -17,7 +19,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Secu
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from . import config, events, inline_manager, metrics, process_manager
+from . import config, events, inline_manager, metrics, model_pool, process_manager, tool_use
 
 logger = logging.getLogger("mlx-serve.router")
 
@@ -30,6 +32,7 @@ _TYPE_CAPABILITIES: dict[str, list[str]] = {
     "text": ["completion"],
     "vision": ["completion", "vision"],
     "embedding": ["embedding"],
+    "image": ["image_generation"],
     "tts": ["audio_speech"],
     "stt": ["audio_transcription"],
 }
@@ -134,6 +137,132 @@ def _scan_cached_hf_paths() -> set[str]:
         return {repo.repo_id for repo in scan_cache_dir().repos}
     except Exception:
         return set()
+
+
+def _parse_image_size(size: Any, aspect_ratio: Any = None) -> tuple[int, int]:
+    """Return width/height for OpenAI image size strings or semantic aspect ratios."""
+    if isinstance(size, str) and "x" in size:
+        left, _, right = size.lower().partition("x")
+        try:
+            width = int(left.strip())
+            height = int(right.strip())
+            if width > 0 and height > 0:
+                return width, height
+        except ValueError:
+            pass
+
+    aspect = str(aspect_ratio or "").strip().lower()
+    if aspect in {"square", "1:1"}:
+        return 1024, 1024
+    if aspect in {"portrait", "9:16"}:
+        return 768, 1344
+    return 1344, 768
+
+
+def _infer_image_command(model_cfg: config.ModelConfig) -> str:
+    """Pick the mflux CLI command for a configured image model."""
+    value = " ".join(
+        str(part or "").lower()
+        for part in (model_cfg.name, model_cfg.hf_path, model_cfg.base_model)
+    )
+    if "qwen-image" in value:
+        if "edit" in value:
+            return "mflux-generate-qwen-edit"
+        return "mflux-generate-qwen"
+    if "flux2" in value or "flux.2" in value:
+        return "mflux-generate-flux2"
+    if "z-image" in value:
+        return "mflux-generate-z-image"
+    return "mflux-generate"
+
+
+async def _run_image_generation(
+    model_name: str,
+    prompt: str,
+    *,
+    width: int,
+    height: int,
+    seed: Any = None,
+) -> pathlib.Path:
+    """Generate one image with mflux and return the output path."""
+    import asyncio
+
+    model_cfg = config.MODELS[model_name]
+    command = model_cfg.image_command or _infer_image_command(model_cfg)
+    executable = _VENV_BIN / command
+    if not executable.exists():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "message": (
+                        f"{command} is not installed. Run: pip install 'mlx-serve[image]'"
+                    ),
+                    "code": "image_backend_unavailable",
+                }
+            },
+        )
+
+    out_dir = pathlib.Path.home() / ".mlx-serve" / "images"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output_path = out_dir / f"{model_name.replace('/', '_')}_{uuid.uuid4().hex[:12]}.png"
+
+    cmd = [
+        str(executable),
+        "--model",
+        model_cfg.hf_path,
+        "--prompt",
+        prompt,
+        "--width",
+        str(width),
+        "--height",
+        str(height),
+        "--output",
+        str(output_path),
+    ]
+    if model_cfg.base_model:
+        cmd.extend(["--base-model", model_cfg.base_model])
+    if model_cfg.steps:
+        cmd.extend(["--steps", str(model_cfg.steps)])
+    if model_cfg.guidance is not None:
+        cmd.extend(["--guidance", str(model_cfg.guidance)])
+    if model_cfg.quantize is not None:
+        cmd.extend(["--quantize", str(model_cfg.quantize)])
+    if seed is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            cmd.extend(["--seed", str(int(seed))])
+    if model_cfg.extra_args:
+        cmd.extend(str(arg) for arg in model_cfg.extra_args)
+
+    logger.info("POST /v1/images/generations model=%s size=%sx%s", model_name, width, height)
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout, _ = await proc.communicate()
+    text = stdout.decode(errors="replace")[-4000:]
+    if proc.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "message": f"Image generation failed with exit code {proc.returncode}: {text}",
+                    "code": "image_generation_failed",
+                }
+            },
+        )
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "message": f"Image generation completed but no image was written. Output: {text}",
+                    "code": "image_output_missing",
+                }
+            },
+        )
+    return output_path
 
 
 # ---------------------------------------------------------------------------
@@ -425,21 +554,54 @@ async def chat_completions(request: Request) -> Any:
     if keep_alive is not None:
         process_manager.set_keep_alive(keep_alive)
 
-    logger.info(f"POST /v1/chat/completions model={model_name} stream={body.get('stream', False)}")
+    # Check if tool use is enabled
+    tools = body.get("tools")
+    tool_use_mode = body.get("tool_use", model_cfg.tool_use)
+
+    logger.info(
+        f"POST /v1/chat/completions model={model_name} stream={body.get('stream', False)} "
+        f"tools={len(tools) if tools else 0} tool_use={tool_use_mode}"
+    )
+
+    # If tool use is enabled and mode is "server", run agent loop
+    if tools and tool_use_mode == "server":
+        return await _run_agent_loop(
+            body,
+            request.headers,
+            model_name,
+            model_cfg,
+            request_start=time.monotonic(),
+        )
 
     # Free any in-process model before loading subprocess
     await inline_manager.unload()
     request_start = time.monotonic()
-    cold_start = await process_manager.ensure_model(model_name)
 
-    if cold_start:
-        events.emit(events.EventType.REQUEST_COLD_START, model=model_name)
-
-    # mlx_lm.server validates the model field against the one it was started with —
-    # rewrite it to the HuggingFace path so the request passes through.
-    body["model"] = model_cfg.hf_path
-
-    target = f"http://127.0.0.1:{config.MLX_PORT}/v1/chat/completions"
+    # Multi-model concurrent loading: if the model is in the pool (or marked
+    # keep_in_pool), route to the pool's dedicated subprocess instead of the
+    # single-model process_manager. This lets multiple text/vision models stay
+    # loaded simultaneously on different ports.
+    use_pool = model_cfg.keep_in_pool or model_pool.get_pool_model(model_name) is not None
+    if use_pool and model_cfg.type in ("text", "vision"):
+        cold_start = await model_pool.load_model(model_name)
+        if cold_start:
+            events.emit(events.EventType.REQUEST_COLD_START, model=model_name)
+        pool_port = model_pool.get_pool_model_port(model_name)
+        if pool_port is None:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": {"message": f"Model {model_name} not ready in pool", "code": 503}},
+            )
+        body["model"] = model_cfg.hf_path
+        target = f"http://127.0.0.1:{pool_port}/v1/chat/completions"
+    else:
+        cold_start = await process_manager.ensure_model(model_name)
+        if cold_start:
+            events.emit(events.EventType.REQUEST_COLD_START, model=model_name)
+        # mlx_lm.server validates the model field against the one it was started with —
+        # rewrite it to the HuggingFace path so the request passes through.
+        body["model"] = model_cfg.hf_path
+        target = f"http://127.0.0.1:{config.MLX_PORT}/v1/chat/completions"
 
     if body.get("stream"):
         return await _instrumented_stream_response(
@@ -458,6 +620,84 @@ async def chat_completions(request: Request) -> Any:
             model_name,
             request_start,
             cold_start,
+        )
+
+
+async def _run_agent_loop(
+    body: dict,
+    headers,
+    model_name: str,
+    model_cfg: config.ModelConfig,
+    *,
+    request_start: float,
+) -> Any:
+    """Run the agent loop for server-side tool execution."""
+
+    logger.info(f"Starting agent loop for {model_name} with {len(body.get('tools', []))} tools")
+    events.emit(
+        events.EventType.AGENT_LOOP_START,
+        model=model_name,
+        detail={"tool_count": len(body.get("tools", []))},
+    )
+
+    # Free any in-process model before loading subprocess
+    await inline_manager.unload()
+    cold_start = await process_manager.ensure_model(model_name)
+
+    if cold_start:
+        events.emit(events.EventType.REQUEST_COLD_START, model=model_name)
+
+    # Run the agent loop
+    try:
+        response = await tool_use.run_agent_loop(
+            messages=body.get("messages", []),
+            tools=body.get("tools"),
+            model_name=model_name,
+            hf_path=model_cfg.hf_path,
+            request_headers=headers,
+            max_iterations=config.TOOL_CONFIG.max_iterations,
+            timeout_seconds=config.TOOL_CONFIG.timeout_seconds,
+            stream=body.get("stream", False),
+            temperature=body.get("temperature"),
+            max_tokens=body.get("max_tokens"),
+        )
+
+        # Record metrics
+        import uuid as uuid_mod
+
+        from . import metrics
+
+        usage = response.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        total_ms = (time.monotonic() - request_start) * 1000
+
+        tps = None
+        if completion_tokens and completion_tokens > 0 and total_ms > 0:
+            tps = round(completion_tokens / (total_ms / 1000), 1)
+
+        metrics.record_request(
+            metrics.RequestMetrics(
+                request_id=str(uuid_mod.uuid4()),
+                model=model_name,
+                endpoint="/v1/chat/completions",
+                timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                started_at=request_start,
+                total_duration_ms=round(total_ms, 1),
+                ttft_ms=round(total_ms, 1),
+                tokens_per_second=tps,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                status_code=200,
+                cold_start=cold_start,
+            )
+        )
+
+    except tool_use.ToolExecutionError as e:
+        logger.error(f"Agent loop failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"message": f"Tool execution failed: {str(e)}", "code": 500}},
         )
 
 
@@ -649,6 +889,68 @@ async def embeddings(request: Request) -> dict:
             {"object": "embedding", "index": i, "embedding": vec} for i, vec in enumerate(vectors)
         ],
         "model": model_name,
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /images/generations
+# ---------------------------------------------------------------------------
+
+
+@router.post("/images/generations")
+async def images_generations(request: Request) -> dict:
+    body = await request.json()
+    model_name: str = body.get("model", "")
+    prompt: str = body.get("prompt", "")
+
+    if model_name not in config.MODELS or config.MODELS[model_name].type != "image":
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"message": f"Image model not found: {model_name}", "code": 404}},
+        )
+    if not prompt:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"message": "prompt is required", "code": 400}},
+        )
+
+    width, height = _parse_image_size(body.get("size"), body.get("aspect_ratio"))
+    request_start = time.monotonic()
+
+    await process_manager.unload()
+    await inline_manager.unload()
+    image_path = await _run_image_generation(
+        model_name,
+        prompt,
+        width=width,
+        height=height,
+        seed=body.get("seed"),
+    )
+
+    total_ms = (time.monotonic() - request_start) * 1000
+    metrics.record_request(
+        metrics.RequestMetrics(
+            request_id=str(uuid.uuid4()),
+            model=model_name,
+            endpoint="/v1/images/generations",
+            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            started_at=request_start,
+            total_duration_ms=round(total_ms, 1),
+            status_code=200,
+        )
+    )
+
+    b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return {
+        "created": int(time.time()),
+        "model": model_name,
+        "data": [
+            {
+                "b64_json": b64,
+                "path": str(image_path),
+                "revised_prompt": prompt,
+            }
+        ],
     }
 
 

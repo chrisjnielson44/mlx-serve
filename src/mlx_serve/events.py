@@ -51,6 +51,18 @@ class EventType(StrEnum):
     # Requests
     REQUEST_COLD_START = "request.cold_start"
 
+    # Tool use
+    TOOL_CALL = "tool.call"
+    TOOL_RESULT = "tool.result"
+    AGENT_LOOP_START = "agent.loop.start"
+    AGENT_LOOP_ITERATION = "agent.loop.iteration"
+    AGENT_LOOP_COMPLETE = "agent.loop.complete"
+
+    # Model pool
+    POOL_LOADED = "pool.loaded"
+    POOL_UNLOADED = "pool.unloaded"
+    POOL_EVICTION = "pool.eviction"
+
 
 # ---------------------------------------------------------------------------
 # Data model

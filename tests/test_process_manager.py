@@ -131,6 +131,7 @@ def test_build_command_includes_per_model_subprocess_options(pm, monkeypatch, tm
     cmd = pm._build_command(cfg)
 
     assert cmd[:2] == [str(executable), "--model"]
+    assert cmd[cmd.index("--max-tokens") + 1] == "8192"
     assert [
         cmd[cmd.index("--chat-template-args")],
         cmd[cmd.index("--chat-template-args") + 1],
@@ -141,6 +142,34 @@ def test_build_command_includes_per_model_subprocess_options(pm, monkeypatch, tm
     assert cmd[cmd.index("--min-p") + 1] == "0.05"
     assert cmd[cmd.index("--prompt-cache-size") + 1] == "2"
     assert cmd[-2:] == ["--log-level", "DEBUG"]
+
+
+def test_build_command_uses_vlm_supported_options_for_vision(pm, monkeypatch, tmp_path):
+    executable = tmp_path / "mlx_vlm.server"
+    executable.write_text("")
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", executable)
+
+    cfg = pm.config.ModelConfig(
+        name="qwen3-vl",
+        type="vision",
+        hf_path="mlx-community/Qwen3-VL-8B-Instruct-4bit",
+        context_length=32768,
+        max_kv_cache_size=8192,
+        temperature=0.6,
+        top_p=0.95,
+        prompt_cache_size=2,
+        extra_args=["--prefill-step-size", "512"],
+    )
+
+    cmd = pm._build_command(cfg)
+
+    assert cmd[:2] == [str(executable), "--model"]
+    assert "--max-tokens" not in cmd
+    assert "--temp" not in cmd
+    assert "--top-p" not in cmd
+    assert "--prompt-cache-size" not in cmd
+    assert cmd[cmd.index("--max-kv-size") + 1] == "8192"
+    assert cmd[-2:] == ["--prefill-step-size", "512"]
 
 
 def test_log_filename_sanitizes_hugging_face_model_ids(pm):
@@ -169,8 +198,13 @@ async def test_switch_emits_downloading_event_when_not_cached(pm, monkeypatch):
     # Don't run the real health loop (would poll a nonexistent server).
     monkeypatch.setattr(pm.asyncio, "create_task", lambda coro: coro.close())
 
-    await pm._switch_model("test-text-model")
+    try:
+        await pm._switch_model("test-text-model")
 
-    downloading = events.get_events(event_type="model.downloading")
-    assert any(e["model"] == "test-text-model" for e in downloading)
-    assert pm._state == pm.ModelState.DOWNLOADING
+        downloading = events.get_events(event_type="model.downloading")
+        assert any(e["model"] == "test-text-model" for e in downloading)
+        assert pm._state == pm.ModelState.DOWNLOADING
+    finally:
+        pm._process = None
+        pm._active_model = None
+        pm._state = pm.ModelState.IDLE

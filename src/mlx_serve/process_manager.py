@@ -115,10 +115,11 @@ def _readiness_timeout(model_cfg: config.ModelConfig) -> int:
 
 
 def _build_command(model_cfg: config.ModelConfig) -> list[str]:
-    executable = _MLX_VLM_SERVER if model_cfg.type == "vision" else _MLX_LM_SERVER
+    is_vision = model_cfg.type == "vision"
+    executable = _MLX_VLM_SERVER if is_vision else _MLX_LM_SERVER
     if not executable.exists():
-        pkg = "mlx-vlm" if model_cfg.type == "vision" else "mlx-lm"
-        extra = "vision" if model_cfg.type == "vision" else "text"
+        pkg = "mlx-vlm" if is_vision else "mlx-lm"
+        extra = "vision" if is_vision else "text"
         raise RuntimeError(
             f"{pkg} is not installed (expected: {executable}). Run: pip install mlx-serve[{extra}]"
         )
@@ -131,10 +132,16 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
         "--port",
         str(config.MLX_PORT),
     ]
+
+    if is_vision:
+        if model_cfg.max_kv_cache_size > 0:
+            cmd += ["--max-kv-size", str(model_cfg.max_kv_cache_size)]
+        if model_cfg.extra_args:
+            cmd += [str(arg) for arg in model_cfg.extra_args]
+        return cmd
+
     if model_cfg.context_length > 0:
         cmd += ["--max-tokens", str(model_cfg.context_length)]
-    if model_cfg.max_kv_cache_size > 0:
-        cmd += ["--max-kv-cache-size", str(model_cfg.max_kv_cache_size)]
     if model_cfg.chat_template_args:
         cmd += ["--chat-template-args", json.dumps(model_cfg.chat_template_args)]
     if model_cfg.temperature is not None:

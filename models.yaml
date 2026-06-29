@@ -8,6 +8,7 @@
 #   "text"           → spawns mlx_lm.server subprocess
 #   "vision"         → spawns mlx_vlm.server subprocess
 #   "embedding"      → in-process via mlx-embeddings
+#   "image"          → subprocess via mflux CLI
 #   "tts"            → in-process via mlx-audio
 #   "stt"            → in-process via mlx-whisper
 # context_length:    max output tokens per response (--max-tokens); 0 = server default (512)
@@ -27,32 +28,9 @@ inactivity_timeout_seconds: 600   # Unload model after 10 min of no requests
 startup_timeout_seconds: 120      # Max wait for model to become READY
 
 models:
-  - name: mlx-qwen3vl-8b
-    type: vision
-    hf_path: mlx-community/Qwen3-VL-8B-Instruct-8bit
-    context_length: 32768
-
-  - name: mlx-qwen2.5-7b
-    type: text
-    hf_path: mlx-community/Qwen2.5-7B-Instruct-4bit
-    context_length: 32768
-    temperature: 0.6
-    top_p: 0.9
-
-  - name: mlx-qwen2.5-3b
-    type: text
-    hf_path: mlx-community/Qwen2.5-3B-Instruct-4bit
-    context_length: 32768
-
-  - name: mlx-deepseek-r1-7b
-    type: text
-    hf_path: mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit
-    context_length: 32768
-
-  # Thinking-template models can be configured per model.
   - name: mlx-ornith
     type: text
-    hf_path: mlx-community/Ornith-1.0-35B-bf16
+    hf_path: mlx-community/Ornith-1.0-35B-8bit
     context_length: 8192
     chat_template_args:
       enable_thinking: false
@@ -60,26 +38,38 @@ models:
     top_p: 0.95
     prompt_cache_size: 2
 
-  - name: mlx-qwen3.5-4b
-    type: text
-    hf_path: mlx-community/Qwen3.5-4B-MLX-8bit
+  - name: mlx-qwen3vl-8b
+    type: vision
+    hf_path: mlx-community/Qwen3-VL-8B-Instruct-4bit
     context_length: 32768
 
-  - name: mlx-qwen3.5-9b
-    type: text
-    hf_path: mlx-community/Qwen3.5-9B-8bit
+  - name: mlx-qwen3vl-30b-a3b
+    type: vision
+    hf_path: mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit
     context_length: 32768
 
   # --- Embedding models (in-process, mlx-embeddings) ---
   - name: mlx-qwen3-embedding
     type: embedding
-    hf_path: Qwen/Qwen3-Embedding-0.6B
+    hf_path: mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ
+    context_length: 8192
+
+  - name: mlx-lfm2.5-embedding
+    type: embedding
+    hf_path: mlx-community/LFM2.5-Embedding-350M-4bit
     context_length: 8192
 
   - name: mlx-qwen3vl-embedding
     type: embedding
     hf_path: Qwen/Qwen3-VL-Embedding-2B
     context_length: 8192
+
+  # --- Image generation models (subprocess, mflux) ---
+  - name: mlx-flux2-klein-4b
+    type: image
+    hf_path: mlx-community/flux2-klein-4b-4bit
+    base_model: flux2-klein-4b
+    steps: 4
 
   # --- TTS models (in-process, mlx-audio) ---
   # Requires: mlx-community/chatterbox-fp16 (download separately — MLX native port of ResembleAI/chatterbox)

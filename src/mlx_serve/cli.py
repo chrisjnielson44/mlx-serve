@@ -112,6 +112,23 @@ def cmd_init(args: argparse.Namespace) -> None:
     print("Edit this file to add your models, then run: mlx-serve start")
 
 
+def cmd_mcp(args: argparse.Namespace) -> None:
+    """Start the MCP server that exposes MLX models as tools/resources."""
+    try:
+        from . import config, mcp_server
+        # Note: host/port are configured in create_mcp_server() via FastMCP constructor args
+        mcp = mcp_server.create_mcp_server(host=args.host, port=args.port)
+        print("Starting MLX MCP server...")
+        print(f"  Port: {args.port}")
+        print(f"  Host: {args.host}")
+        print(f"  Models: {len(config.MODELS)} configured")
+        mcp.run(transport="streamable-http")
+    except ImportError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("Install the mcp package: pip install mlx-serve[mcp]", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="mlx-serve",
@@ -146,6 +163,11 @@ def main() -> None:
     p_init.add_argument("--dir", default=None, help="Target directory (default: current directory)")
     p_init.add_argument("--force", action="store_true", help="Overwrite existing models.yaml")
 
+    # mcp
+    p_mcp = sub.add_parser("mcp", help="Start MCP server (expose models as tools)")
+    p_mcp.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    p_mcp.add_argument("--port", type=int, default=8096, help="MCP server port (default: 8096)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -158,6 +180,7 @@ def main() -> None:
         "models": cmd_models,
         "pull": cmd_pull,
         "init": cmd_init,
+        "mcp": cmd_mcp,
     }
     commands[args.command](args)
 

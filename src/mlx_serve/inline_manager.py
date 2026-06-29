@@ -86,8 +86,19 @@ def _run_embedding(model: Any, processor: Any, inputs: list[dict]) -> list[list[
     e.g. [{"text": "hello"}, {"image": "/path/img.jpg"}, {"text": "cap", "image": "url"}]
     """
     import mlx.core as mx
+    from mlx_embeddings import generate
 
-    embeddings = model.process(inputs, processor=processor)
+    texts = [str(item.get("text") or "") for item in inputs]
+    images = [item.get("image") for item in inputs]
+    image_arg = images if any(image is not None for image in images) else None
+
+    outputs = generate(model, processor, texts=texts, images=image_arg)
+    embeddings = getattr(outputs, "text_embeds", None)
+    if embeddings is None:
+        embeddings = getattr(outputs, "image_embeds", None)
+    if embeddings is None:
+        embeddings = outputs
+
     mx.eval(embeddings)
     return embeddings.tolist()
 

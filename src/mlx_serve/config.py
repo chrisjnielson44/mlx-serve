@@ -68,6 +68,15 @@ class ModelConfig:
     min_p: float | None = None
     prompt_cache_size: int | None = None
     extra_args: list[str] | None = None
+    image_command: str | None = None
+    base_model: str | None = None
+    steps: int | None = None
+    guidance: float | None = None
+    quantize: int | None = None
+    # Tool use: "auto" = client decides, "server" = mlx-serve executes tools
+    tool_use: str | None = None  # "auto" | "server" | None
+    # Multi-model pool: keep this model loaded alongside others
+    keep_in_pool: bool = False  # if True, model stays loaded in model pool
 
 
 @dataclass
@@ -80,10 +89,34 @@ class MonitoringConfig:
     log_retention_mb: int = 50  # per JSONL file
 
 
-_VALID_TYPES = {"text", "vision", "embedding", "tts", "stt"}
+@dataclass
+class ToolUseConfig:
+    max_iterations: int = 10  # max agent loop iterations
+    timeout_seconds: int = 60  # timeout per iteration
 
 
-def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfig]:
+@dataclass
+class ModelPoolConfig:
+    max_models: int = 3  # max concurrent models in pool
+    memory_threshold: float = 0.85  # unload lowest priority when RAM > this %
+    auto_evict: bool = True  # automatically evict models when memory is tight
+
+
+_VALID_TYPES = {"text", "vision", "embedding", "image", "tts", "stt"}
+
+
+def _load() -> tuple[
+    dict[str, ModelConfig],
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    MonitoringConfig,
+    ToolUseConfig,
+    ModelPoolConfig,
+]:
     with _CONFIG_PATH.open() as f:
         data = yaml.safe_load(f)
 
@@ -107,6 +140,13 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             min_p=entry.get("min_p"),
             prompt_cache_size=entry.get("prompt_cache_size"),
             extra_args=entry.get("extra_args"),
+            image_command=entry.get("image_command"),
+            base_model=entry.get("base_model"),
+            steps=entry.get("steps"),
+            guidance=entry.get("guidance"),
+            quantize=entry.get("quantize"),
+            tool_use=entry.get("tool_use"),
+            keep_in_pool=entry.get("keep_in_pool", False),
         )
 
     # Monitoring settings (optional section in models.yaml)
@@ -122,21 +162,32 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
         log_retention_mb=mon_raw.get("log_retention_mb", 50),
     )
 
+    # Tool use config (optional section in models.yaml)
+    tool_raw = data.get("tool_use", {})
+    tool_config = ToolUseConfig(
+        max_iterations=tool_raw.get("max_iterations", 10),
+        timeout_seconds=tool_raw.get("timeout_seconds", 60),
+    )
+
+    # Model pool config (optional section in models.yaml)
+    pool_raw = data.get("model_pool", {})
+    pool_config = ModelPoolConfig(
+        max_models=pool_raw.get("max_models", 3),
+        memory_threshold=pool_raw.get("memory_threshold", 0.85),
+        auto_evict=pool_raw.get("auto_evict", True),
+    )
+
     return (
         models,
         data.get("mlx_port", 8091),
         data.get("manager_port", 8095),
         data.get("inactivity_timeout_seconds", 600),
         data.get("startup_timeout_seconds", 120),
-        # Max wait for a first-time model download (HF pull) to finish. Far
-        # larger than startup_timeout because multi-GB weights can't arrive in
-        # 120s. Only applied when the model is not yet in the HF cache.
         data.get("download_timeout_seconds", 1800),
-        # After a model fails to load, reject further requests for it for this
-        # many seconds instead of respawning on every retry (prevents the
-        # infinite reload loop when a client auto-retries).
         data.get("failure_cooldown_seconds", 30),
         monitoring,
+        tool_config,
+        pool_config,
     )
 
 
@@ -149,6 +200,8 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
     DOWNLOAD_TIMEOUT,
     FAILURE_COOLDOWN,
     MONITORING,
+    TOOL_CONFIG,
+    POOL_CONFIG,
 ) = _load()
 
 # Optional bearer token auth. Set MLX_API_KEY env var to enable.
